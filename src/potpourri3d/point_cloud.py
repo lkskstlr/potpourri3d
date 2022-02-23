@@ -35,3 +35,17 @@ class PointCloudHeatSolver():
     
     def compute_log_map(self, p_ind):
         return self.bound_solver.compute_log_map(p_ind)
+
+
+class PointCloudLocalTriangulation():
+
+    def __init__(self, P, with_degeneracy_heuristic=True):
+        validate_points(P)
+        self.bound_triangulation = pp3db.PointCloudLocalTriangulation(P, with_degeneracy_heuristic)
+
+    def get_local_triangulation(self):
+        out = self.bound_triangulation.get_local_triangulation()
+        assert out.shape[-1] % 3 == 0
+        max_neighs = out.shape[-1] // 3
+        out = np.reshape(out, [-1, max_neighs, 3])
+        return out

@@ -3,6 +3,7 @@
 #include "geometrycentral/pointcloud/point_cloud_heat_solver.h"
 #include "geometrycentral/pointcloud/point_cloud_io.h"
 #include "geometrycentral/pointcloud/point_position_geometry.h"
+#include "geometrycentral/pointcloud/local_triangulation.h"
 #include "geometrycentral/utilities/eigen_interop_helpers.h"
 
 #include <pybind11/eigen.h>
@@ -10,6 +11,8 @@
 #include <pybind11/pybind11.h>
 
 #include "Eigen/Dense"
+
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 namespace py = pybind11;
 
@@ -19,7 +22,7 @@ using namespace geometrycentral::pointcloud;
 
 
 // For overloaded functions, with C++11 compiler only
-template <typename... Args>
+template<typename... Args>
 using overload_cast_ = pybind11::detail::overload_cast_impl<Args...>;
 
 
@@ -67,7 +70,7 @@ public:
     PointData<double> ext = solver->extendScalars(sources);
     return ext.toVector();
   }
-  
+
   // Returns an extrinsic representation of the tangent frame being used internally, as X/Y/N vectors.
   std::tuple<DenseMatrix<double>, DenseMatrix<double>, DenseMatrix<double>> get_tangent_frames() {
 
@@ -120,18 +123,74 @@ private:
   std::unique_ptr<PointCloudHeatSolver> solver;
 };
 
+class PointCloudLocalTriangulation {
+public:
+  PointCloudLocalTriangulation(DenseMatrix<double> points, bool withDegeneracyHeuristic) : withDegeneracyHeuristic(withDegeneracyHeuristic) {
+
+    // Construct the internal cloud and geometry
+    cloud.reset(new PointCloud(points.rows()));
+    geom.reset(new PointPositionGeometry(*cloud));
+    for (size_t i = 0; i < cloud->nPoints(); i++) {
+      for (size_t j = 0; j < 3; j++) {
+        geom->positions[i][j] = points(i, j);
+      }
+    }
+  }
+
+
+  Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic> get_local_triangulation() {
+    PointData<std::vector<std::array<Point, 3>>> local_triangulation = buildLocalTriangulations(*cloud, *geom, withDegeneracyHeuristic);
+
+    int max_neigh = 0;
+
+    size_t idx = 0;
+    for (Point v : cloud->points()) {
+      max_neigh = MAX(max_neigh, local_triangulation[v].size());
+      if (idx != v.getIndex()) {
+        py::print("Error. Index of points not consistent. (Idx, v.getIndex) = ", idx, v.getIndex());
+      }
+      idx++;
+    }
+
+    Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic> out(cloud->nPoints(), 3 * max_neigh);
+    out.setConstant(-1);
+
+    for (Point v : cloud->points()) {
+      int i = 0;
+      for (auto const &neighs : local_triangulation[v]) {
+        out(v.getIndex(), i + 0) = (int) neighs[0].getIndex();
+        out(v.getIndex(), i + 1) = (int) neighs[1].getIndex();
+        out(v.getIndex(), i + 2) = (int) neighs[2].getIndex();
+        i += 3;
+      }
+    }
+
+    return out;
+  }
+
+private:
+  const bool withDegeneracyHeuristic;
+  std::unique_ptr<PointCloud> cloud;
+  std::unique_ptr<PointPositionGeometry> geom;
+  std::unique_ptr<PointCloudHeatSolver> solver;
+};
+
 
 // Actual binding code
 // clang-format off
-void bind_point_cloud(py::module& m) {
-  
+void bind_point_cloud(py::module &m) {
+
   py::class_<PointCloudHeatSolverEigen>(m, "PointCloudHeatSolver")
-        .def(py::init<DenseMatrix<double>, double>())
-        .def("compute_distance", &PointCloudHeatSolverEigen::compute_distance, py::arg("source_point"))
-        .def("compute_distance_multisource", &PointCloudHeatSolverEigen::compute_distance_multisource, py::arg("source_points"))
-        .def("extend_scalar", &PointCloudHeatSolverEigen::extend_scalar, py::arg("source_points"), py::arg("source_values"))
-        .def("get_tangent_frames", &PointCloudHeatSolverEigen::get_tangent_frames)
-        .def("transport_tangent_vector", &PointCloudHeatSolverEigen::transport_tangent_vector, py::arg("source_point"), py::arg("vector"))
-        .def("transport_tangent_vectors", &PointCloudHeatSolverEigen::transport_tangent_vectors, py::arg("source_points"), py::arg("vectors"))
-        .def("compute_log_map", &PointCloudHeatSolverEigen::compute_log_map, py::arg("source_point"));
+      .def(py::init<DenseMatrix<double>, double>())
+      .def("compute_distance", &PointCloudHeatSolverEigen::compute_distance, py::arg("source_point"))
+      .def("compute_distance_multisource", &PointCloudHeatSolverEigen::compute_distance_multisource, py::arg("source_points"))
+      .def("extend_scalar", &PointCloudHeatSolverEigen::extend_scalar, py::arg("source_points"), py::arg("source_values"))
+      .def("get_tangent_frames", &PointCloudHeatSolverEigen::get_tangent_frames)
+      .def("transport_tangent_vector", &PointCloudHeatSolverEigen::transport_tangent_vector, py::arg("source_point"), py::arg("vector"))
+      .def("transport_tangent_vectors", &PointCloudHeatSolverEigen::transport_tangent_vectors, py::arg("source_points"), py::arg("vectors"))
+      .def("compute_log_map", &PointCloudHeatSolverEigen::compute_log_map, py::arg("source_point"));
+
+  py::class_<PointCloudLocalTriangulation>(m, "PointCloudLocalTriangulation")
+      .def(py::init<DenseMatrix<double>, bool>())
+      .def("get_local_triangulation", &PointCloudLocalTriangulation::get_local_triangulation);
 }
